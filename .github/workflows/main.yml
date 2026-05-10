@@ -33,7 +33,7 @@ jobs:
         run: |
           cd android
 
-          go mod init goapk
+          go mod tidy
           # Install tools
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
