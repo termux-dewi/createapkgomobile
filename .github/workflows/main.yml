@@ -1,35 +1,68 @@
-- name: Setup Android NDK
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false # Kita matikan cache agar tidak ada konflik path lama
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android NDK
         run: |
-          # Kita tetap deteksi NDK, tapi pastikan path-nya benar untuk gomobile
           NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | tail -1)
           echo "NDK_PATH=$NDK_PATH" >> $GITHUB_ENV
 
       - name: Install & Force Bind Source
         run: |
-          # Pindah ke folder android karena go.mod ada di sana
           cd android
-          # Jika go.mod belum ada, inisialisasi agar tidak error "cannot find main module"
-          go mod init goapk || true 
-          go mod tidy
-          
+          # Install tools
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
+          
+          # Buat module dan download source secara eksplisit
+          
           
           go get golang.org/x/mobile/bind
           go get golang.org/x/mobile/app
           
+          
+          go mod download
+          
+          # Tambahkan path binary ke environment
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
       - name: Build Fat AAR (ARM & ARM64)
         run: |
+          cd android
           export ANDROID_NDK_HOME=${{ env.NDK_PATH }}
           
           # Jalankan gomobile init
           $(go env GOPATH)/bin/gomobile init
           
-          # Tetap pakai format Anda: masuk ke folder lalu build
-          cd android
-          
-          # Menggunakan perintah build Anda dengan penyesuaian path output
-          # Flag -target=android tetap digunakan sesuai permintaan Anda
-          $(go env GOPATH)/bin/gomobile build -v -target=android -o ../tunnel-proyek.apk .
+          # Gunakan perintah bind dengan path lengkap ke module
+          # Kita tambahkan flag -v untuk debugging
+          $(go env GOPATH)/bin/gomobile build -target android/arm,android/arm64 -o ../vpnengine.apk .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpnengine-apk
+          path: vpnengine.apk
