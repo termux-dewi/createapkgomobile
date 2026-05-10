@@ -39,7 +39,7 @@ jobs:
           rm -f go.mod go.sum
           go mod init goapk
           go get golang.org/x/mobile/bind
-          golang.org/x/mobile/app
+          go get golang.org/x/mobile/app
           go mod download
           
           # Tambahkan path binary ke environment
