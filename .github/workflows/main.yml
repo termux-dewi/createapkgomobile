@@ -32,7 +32,7 @@ jobs:
       - name: Install & Force Bind Source
         run: |
           cd android
-
+          go mod init goapk
           go mod tidy
           # Install tools
           go install golang.org/x/mobile/cmd/gomobile@latest
@@ -42,7 +42,7 @@ jobs:
           
           go get golang.org/x/mobile/bind
           go get golang.org/x/mobile/app
-          go mod init
+          
           # Tambahkan path binary ke environment
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
