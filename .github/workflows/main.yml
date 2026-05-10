@@ -31,6 +31,7 @@ jobs:
 
       - name: Install & Force Bind Source
         run: |
+          cd android
           # Install tools
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
@@ -54,7 +55,7 @@ jobs:
           
           # Gunakan perintah bind dengan path lengkap ke module
           # Kita tambahkan flag -v untuk debugging
-          $(go env GOPATH)/bin/gomobile build -v -target=android -o tunnel-proyek.apk ./android
+          $(go env GOPATH)/bin/gomobile build -v -target=android -o ../tunnel-proyek.apk .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
