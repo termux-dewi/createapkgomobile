@@ -32,20 +32,12 @@ type UserInfo struct {
 	IsOnline  bool   `json:"is_online"`
 }
 
-type ForwardRule struct {
-	Proto string
-	LPort int
-	RVIP  string
-	RPort int
-}
-
 type AppState struct {
 	User     UserInfo
 	LoggedIn bool
 	Users    []UserInfo
-	Rules    []ForwardRule
 	MenuOpen bool
-	View     string // "forward" atau "users"
+	View     string 
 	TLS      *tls.Config
 	Mutex    sync.Mutex
 }
@@ -65,25 +57,30 @@ func main() {
 	}
 
 	go func() {
-		w := app.NewWindow(app.Title("MeshTunnel"), app.Size(unit.Dp(400), unit.Dp(800)))
-		th := material.NewTheme(gofont.Collection())
-		var ops op.Ops
+		w := new(app.Window)
+		w.Option(app.Title("MeshTunnel"), app.Size(unit.Dp(400), unit.Dp(800)))
+		
+		// API Gio Terbaru: NewTheme tidak butuh argumen
+		th := material.NewTheme()
+		th.Shaper = gofont.Collection()[0].Font.Typeface 
 
-		// Widgets
+		var ops op.Ops
 		var userEd, passEd, ipEd, lpEd, rpEd widget.Editor
 		var loginBtn, regBtn, menuBtn, navFwd, navUsers, logoutBtn, addBtn widget.Clickable
 		var list widget.List
 
 		for {
-			e := <-w.Events()
+			e := w.NextEvent()
 			switch e := e.(type) {
+			case system.DestroyEvent:
+				os.Exit(0)
 			case system.FrameEvent:
 				gtx := layout.NewContext(&ops, e)
 
 				if !state.LoggedIn {
-					// LAYAR AUTH
-					if loginBtn.Clicked() { state.authAction("LOGIN", userEd.Text(), passEd.Text()) }
-					if regBtn.Clicked() { state.authAction("REGISTER", userEd.Text(), passEd.Text()) }
+					// --- LAYAR AUTH ---
+					if loginBtn.Clicked(gtx) { state.authAction("LOGIN", userEd.Text(), passEd.Text()) }
+					if regBtn.Clicked(gtx) { state.authAction("REGISTER", userEd.Text(), passEd.Text()) }
 					
 					layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -95,11 +92,11 @@ func main() {
 						)
 					})
 				} else {
-					// DASHBOARD DENGAN DRAWER
-					if menuBtn.Clicked() { state.MenuOpen = !state.MenuOpen }
-					if navFwd.Clicked() { state.View = "forward"; state.MenuOpen = false }
-					if navUsers.Clicked() { state.View = "users"; state.MenuOpen = false }
-					if logoutBtn.Clicked() { state.logout() }
+					// --- DASHBOARD DENGAN DRAWER ---
+					if menuBtn.Clicked(gtx) { state.MenuOpen = !state.MenuOpen }
+					if navFwd.Clicked(gtx) { state.View = "forward"; state.MenuOpen = false }
+					if navUsers.Clicked(gtx) { state.View = "users"; state.MenuOpen = false }
+					if logoutBtn.Clicked(gtx) { state.logout() }
 
 					layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -119,6 +116,7 @@ func main() {
 								layout.Stacked(func(gtx layout.Context) layout.Dimensions {
 									if !state.MenuOpen { return layout.Dimensions{} }
 									gtx.Constraints.Max.X = gtx.Dp(unit.Dp(260))
+									// Drawer BG
 									return material.List(th, &widget.List{Axis: layout.Vertical}).Layout(gtx, 1, func(gtx layout.Context, _ int) layout.Dimensions {
 										return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 											layout.Rigid(material.Button(th, &navFwd, "Port Forwarding").Layout),
@@ -138,7 +136,7 @@ func main() {
 	app.Main()
 }
 
-// --- LOGIC SIGNALLING & AUTH ---
+// --- LOGIC SIGNALLING & ENGINE ---
 
 func (s *AppState) authAction(op, user, pass string) {
 	conn, _, err := websocket.DefaultDialer.Dial(ServerWSS, nil)
@@ -179,8 +177,6 @@ func (s *AppState) logout() {
 	os.Remove("session.json")
 }
 
-// --- DATA PLANE (QUIC) ---
-
 func (s *AppState) startReceiver() {
 	l, _ := quic.ListenAddr(":9999", s.TLS, &quic.Config{EnableDatagrams: true})
 	for {
@@ -200,8 +196,6 @@ func (s *AppState) startReceiver() {
 	}
 }
 
-// --- UI VIEWS ---
-
 func drawForwardView(gtx layout.Context, th *material.Theme, s *AppState, add *widget.Clickable, ip, lp, rp *widget.Editor) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(material.H6(th, "Port Forwarding (Maks 10)").Layout),
@@ -215,8 +209,8 @@ func drawForwardView(gtx layout.Context, th *material.Theme, s *AppState, add *w
 func drawUserListView(gtx layout.Context, th *material.Theme, s *AppState, l *widget.List) layout.Dimensions {
 	return material.List(th, l).Layout(gtx, len(s.Users), func(gtx layout.Context, i int) layout.Dimensions {
 		u := s.Users[i]
-		status := "Offline"
-		if u.IsOnline { status = "Online" }
-		return material.Body1(th, fmt.Sprintf("%s (%s) - %s", u.Username, u.VirtualIP, status)).Layout(gtx)
+		st := "Offline"
+		if u.IsOnline { st = "Online" }
+		return material.Body1(th, fmt.Sprintf("%s (%s) - %s", u.Username, u.VirtualIP, st)).Layout(gtx)
 	})
 }
