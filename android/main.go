@@ -1,267 +1,222 @@
-
 package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"os"
-	"time"
-
-	"github.com/gorilla/websocket"
-	"github.com/quic-go/quic-go"
+	"sync"
 
 	"gioui.org/app"
 	"gioui.org/font/gofont"
 	"gioui.org/io/system"
 	"gioui.org/layout"
 	"gioui.org/op"
-	"gioui.org/text"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
 )
 
-type StreamMeta struct {
-	Protocol  string `json:"protocol"`
-	RemotePort int `json:"remote_port"`
+// GANTI DENGAN URL CLOUDFLARE ANDA
+const ServerWSS = "wss://your-tunnel-name.trycloudflare.com/ws"
+
+type UserInfo struct {
+	Username  string `json:"username"`
+	VirtualIP string `json:"virtual_ip"`
+	IsOnline  bool   `json:"is_online"`
 }
 
-type Packet struct {
-	Type       string `json:"type"`
-	Username   string `json:"username,omitempty"`
-	Password   string `json:"password,omitempty"`
-	PublicAddr string `json:"public_addr,omitempty"`
-	VirtualIP  string `json:"virtual_ip,omitempty"`
+type ForwardRule struct {
+	Proto string
+	LPort int
+	RVIP  string
+	RPort int
 }
 
-var (
-	username widget.Editor
-	password widget.Editor
-	server   widget.Editor
-
-	loginBtn widget.Clickable
-
-	status = "Disconnected"
-	virtualIP = ""
-
-	ws *websocket.Conn
-)
-
-func generateTLSConfig() *tls.Config {
-	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization: []string{"MeshTunnel"},
-		},
-		NotBefore: time.Now(),
-		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
-	}
-
-	certDER, _ := x509.CreateCertificate(
-		rand.Reader,
-		&template,
-		&template,
-		&key.PublicKey,
-		key,
-	)
-
-	keyPEM := pem.EncodeToMemory(&pem.Block{
-		Type: "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	})
-
-	certPEM := pem.EncodeToMemory(&pem.Block{
-		Type: "CERTIFICATE",
-		Bytes: certDER,
-	})
-
-	tlsCert, _ := tls.X509KeyPair(certPEM, keyPEM)
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
-		NextProtos: []string{"mesh"},
-	}
+type AppState struct {
+	User     UserInfo
+	LoggedIn bool
+	Users    []UserInfo
+	Rules    []ForwardRule
+	MenuOpen bool
+	View     string // "forward" atau "users"
+	TLS      *tls.Config
+	Mutex    sync.Mutex
 }
 
-func handleStream(stream quic.Stream) {
-	decoder := json.NewDecoder(stream)
-
-	var meta StreamMeta
-
-	if err := decoder.Decode(&meta); err != nil {
-		return
+func main() {
+	state := &AppState{
+		TLS:  &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"mesh"}},
+		View: "forward",
 	}
 
-	targetAddr := fmt.Sprintf("127.0.0.1:%d", meta.RemotePort)
-
-	target, err := net.Dial(meta.Protocol, targetAddr)
-	if err != nil {
-		return
+	// Load Session Persistent
+	if b, err := os.ReadFile("session.json"); err == nil {
+		json.Unmarshal(b, &state.User)
+		state.LoggedIn = true
+		go state.startReceiver()
+		go state.syncUserList()
 	}
 
-	go io.Copy(target, stream)
-	go io.Copy(stream, target)
-}
-
-func startQUICServer() {
-	listener, err := quic.ListenAddr(":9999", generateTLSConfig(), nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	for {
-		conn, err := listener.Accept(context.Background())
-		if err != nil {
-			continue
-		}
-
-		go func(c quic.Connection) {
-			for {
-				stream, err := c.AcceptStream(context.Background())
-				if err != nil {
-					return
-				}
-
-				go handleStream(stream)
-			}
-		}(conn)
-	}
-}
-
-func login() {
-	conn, _, err := websocket.DefaultDialer.Dial(server.Text(), nil)
-	if err != nil {
-		status = err.Error()
-		return
-	}
-
-	ws = conn
-
-	conn.WriteJSON(Packet{
-		Type: "login",
-		Username: username.Text(),
-		Password: password.Text(),
-		PublicAddr: "127.0.0.1:9999",
-	})
-
-	var resp Packet
-
-	if err := conn.ReadJSON(&resp); err != nil {
-		status = err.Error()
-		return
-	}
-
-	if resp.Type == "login_success" {
-		status = "Connected"
-		virtualIP = resp.VirtualIP
-	} else {
-		status = "Login Failed"
-	}
-}
-
-func ui() {
 	go func() {
-		w := new(app.Window)
-
-		w.Option(
-			app.Title("Mesh Tunnel"),
-			app.Size(unit.Dp(420), unit.Dp(760)),
-		)
-
-		th := material.NewTheme()
-		th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
-
+		w := app.NewWindow(app.Title("MeshTunnel"), app.Size(unit.Dp(400), unit.Dp(800)))
+		th := material.NewTheme(gofont.Collection())
 		var ops op.Ops
 
+		// Widgets
+		var userEd, passEd, ipEd, lpEd, rpEd widget.Editor
+		var loginBtn, regBtn, menuBtn, navFwd, navUsers, logoutBtn, addBtn widget.Clickable
+		var list widget.List
+
 		for {
-			e := w.Event()
-
+			e := <-w.Events()
 			switch e := e.(type) {
-
-			case app.DestroyEvent:
-				os.Exit(0)
-
 			case system.FrameEvent:
-				gtx := app.NewContext(&ops, e)
+				gtx := layout.NewContext(&ops, e)
 
-				if loginBtn.Clicked(gtx) {
-					go login()
-				}
+				if !state.LoggedIn {
+					// LAYAR AUTH
+					if loginBtn.Clicked() { state.authAction("LOGIN", userEd.Text(), passEd.Text()) }
+					if regBtn.Clicked() { state.authAction("REGISTER", userEd.Text(), passEd.Text()) }
+					
+					layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(material.H4(th, "MeshTunnel").Layout),
+							layout.Rigid(material.Editor(th, &userEd, "Username").Layout),
+							layout.Rigid(material.Editor(th, &passEd, "Password").Layout),
+							layout.Rigid(material.Button(th, &loginBtn, "LOGIN").Layout),
+							layout.Rigid(material.Button(th, &regBtn, "REGISTER").Layout),
+						)
+					})
+				} else {
+					// DASHBOARD DENGAN DRAWER
+					if menuBtn.Clicked() { state.MenuOpen = !state.MenuOpen }
+					if navFwd.Clicked() { state.View = "forward"; state.MenuOpen = false }
+					if navUsers.Clicked() { state.View = "users"; state.MenuOpen = false }
+					if logoutBtn.Clicked() { state.logout() }
 
-				layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{
-						Axis: layout.Vertical,
-					}.Layout(
-						gtx,
-
+					layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.H3(th, "Mesh Tunnel").Layout(gtx)
+							return layout.Flex{}.Layout(gtx,
+								layout.Rigid(material.Button(th, &menuBtn, "≡").Layout),
+								layout.Flexed(1, material.H6(th, " MeshTunnel").Layout),
+							)
 						}),
-
-						layout.Rigid(layout.Spacer{Height: unit.Dp(20)}.Layout),
-
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Editor(th, &username, "Username").Layout(gtx)
-						}),
-
-						layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Editor(th, &password, "Password").Layout(gtx)
-						}),
-
-						layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Editor(th, &server, "wss://tunnel/ws").Layout(gtx)
-						}),
-
-						layout.Rigid(layout.Spacer{Height: unit.Dp(20)}.Layout),
-
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Button(th, &loginBtn, "LOGIN").Layout(gtx)
-						}),
-
-						layout.Rigid(layout.Spacer{Height: unit.Dp(20)}.Layout),
-
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Body1(th, "Status: "+status).Layout(gtx)
-						}),
-
-						layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Body1(th, "Virtual IP: "+virtualIP).Layout(gtx)
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return layout.Stack{}.Layout(gtx,
+								layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+									if state.View == "forward" {
+										return drawForwardView(gtx, th, state, &addBtn, &ipEd, &lpEd, &rpEd)
+									}
+									return drawUserListView(gtx, th, state, &list)
+								}),
+								layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+									if !state.MenuOpen { return layout.Dimensions{} }
+									gtx.Constraints.Max.X = gtx.Dp(unit.Dp(260))
+									return material.List(th, &widget.List{Axis: layout.Vertical}).Layout(gtx, 1, func(gtx layout.Context, _ int) layout.Dimensions {
+										return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+											layout.Rigid(material.Button(th, &navFwd, "Port Forwarding").Layout),
+											layout.Rigid(material.Button(th, &navUsers, "Daftar User").Layout),
+											layout.Rigid(material.Button(th, &logoutBtn, "Logout").Layout),
+										)
+									})
+								}),
+							)
 						}),
 					)
-				})
-
+				}
 				e.Frame(gtx.Ops)
 			}
 		}
 	}()
-
 	app.Main()
 }
 
-func main() {
-	server.SetText("ws://127.0.0.1:8080/ws")
+// --- LOGIC SIGNALLING & AUTH ---
 
-	go startQUICServer()
+func (s *AppState) authAction(op, user, pass string) {
+	conn, _, err := websocket.DefaultDialer.Dial(ServerWSS, nil)
+	if err != nil { return }
+	defer conn.Close()
 
-	ui()
+	conn.WriteJSON(map[string]string{"type": op, "username": user, "password": pass})
+	var res map[string]interface{}
+	conn.ReadJSON(&res)
+
+	if res["status"] == "ok" {
+		userData, _ := json.Marshal(res["user"])
+		json.Unmarshal(userData, &s.User)
+		s.LoggedIn = true
+		os.WriteFile("session.json", userData, 0644)
+		go s.startReceiver()
+		go s.syncUserList()
+	}
+}
+
+func (s *AppState) syncUserList() {
+	conn, _, _ := websocket.DefaultDialer.Dial(ServerWSS, nil)
+	for {
+		conn.WriteJSON(map[string]string{"type": "GET_USERS"})
+		var msg map[string]interface{}
+		if err := conn.ReadJSON(&msg); err != nil { break }
+		if msg["type"] == "USER_LIST" {
+			s.Mutex.Lock()
+			b, _ := json.Marshal(msg["users"])
+			json.Unmarshal(b, &s.Users)
+			s.Mutex.Unlock()
+		}
+	}
+}
+
+func (s *AppState) logout() {
+	s.LoggedIn = false
+	os.Remove("session.json")
+}
+
+// --- DATA PLANE (QUIC) ---
+
+func (s *AppState) startReceiver() {
+	l, _ := quic.ListenAddr(":9999", s.TLS, &quic.Config{EnableDatagrams: true})
+	for {
+		sess, _ := l.Accept(context.Background())
+		go func(conn quic.Connection) {
+			for {
+				stream, _ := conn.AcceptStream(context.Background())
+				go func() {
+					var m struct{ Proto string; Port int }
+					json.NewDecoder(stream).Decode(&m)
+					dest, _ := net.Dial(m.Proto, fmt.Sprintf("127.0.0.1:%d", m.Port))
+					go io.Copy(dest, stream)
+					io.Copy(stream, dest)
+				}()
+			}
+		}(sess)
+	}
+}
+
+// --- UI VIEWS ---
+
+func drawForwardView(gtx layout.Context, th *material.Theme, s *AppState, add *widget.Clickable, ip, lp, rp *widget.Editor) layout.Dimensions {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(material.H6(th, "Port Forwarding (Maks 10)").Layout),
+		layout.Rigid(material.Editor(th, ip, "Target VIP").Layout),
+		layout.Rigid(material.Editor(th, lp, "Local Port").Layout),
+		layout.Rigid(material.Editor(th, rp, "Remote Port").Layout),
+		layout.Rigid(material.Button(th, add, "Tambah Tunnel").Layout),
+	)
+}
+
+func drawUserListView(gtx layout.Context, th *material.Theme, s *AppState, l *widget.List) layout.Dimensions {
+	return material.List(th, l).Layout(gtx, len(s.Users), func(gtx layout.Context, i int) layout.Dimensions {
+		u := s.Users[i]
+		status := "Offline"
+		if u.IsOnline { status = "Online" }
+		return material.Body1(th, fmt.Sprintf("%s (%s) - %s", u.Username, u.VirtualIP, status)).Layout(gtx)
+	})
 }
