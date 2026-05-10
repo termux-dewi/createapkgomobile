@@ -42,7 +42,7 @@ jobs:
           
           go get golang.org/x/mobile/bind
           go get golang.org/x/mobile/app
-          
+          go mod init
           # Tambahkan path binary ke environment
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
