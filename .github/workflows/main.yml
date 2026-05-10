@@ -32,6 +32,8 @@ jobs:
       - name: Install & Force Bind Source
         run: |
           cd android
+
+          go mod init goapk
           # Install tools
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
