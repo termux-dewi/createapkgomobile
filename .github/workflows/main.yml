@@ -43,7 +43,7 @@ jobs:
           go get golang.org/x/mobile/bind
           go get golang.org/x/mobile/app
           
-          
+          go mod tidy
           go mod download
           
           # Tambahkan path binary ke environment
