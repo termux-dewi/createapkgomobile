@@ -39,8 +39,7 @@ jobs:
           rm -f go.mod go.sum
           go mod init goapk
           go get golang.org/x/mobile/bind
-          go get golang.zx2c4.com/wireguard
-          go get google.golang.org/grpc
+          golang.org/x/mobile/app
           go mod download
           
           # Tambahkan path binary ke environment
@@ -55,10 +54,10 @@ jobs:
           
           # Gunakan perintah bind dengan path lengkap ke module
           # Kita tambahkan flag -v untuk debugging
-          $(go env GOPATH)/bin/gomobile build -target android/arm,android/arm64 -androidapi 21 -v ./android/
+          $(go env GOPATH)/bin/gomobile build -v -target=android -o tunnel-proyek.apk ./android
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: APK
-          path: gomobile.apk
+          path: tunnel-proyek.apk
